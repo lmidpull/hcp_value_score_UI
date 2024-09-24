@@ -48,19 +48,23 @@ if st.session_state.submitted:
             weight = st.number_input("Enter the weight you want to use for: "+ x)
             df[x+ " calculation with weight"] = df[x+" min-max norm"] * float(weight)
             list1.append(x+ " calculation with weight")
-            
+
+        df['High Value Category'] = 'searching'
         condition = [(df[segment_label]=='CHURNED'),(df[segment_label]=='CTL_NON_FIRST_TIME'), (df[segment_label]=='CTL_MAYBE_FIRST_TIME'), (df[segment_label]=='FIRST_TIME'), (df[segment_label]=='DECLINING'), (df[segment_label]=='NEUTRAL'), (df[segment_label]=='GROWING')]
         values = ['CHURNED', 'Non-Prescriber', 'Non-Prescriber', 'Non-Prescriber', 'Prescriber', 'Prescriber', 'Prescriber']
         df['High Value Category']=  np.select(condition, values) 
-        
+
+        df['NrX Prob Tiers']='searching'
         condition2 = [(df['High Value Category']!='Non-Prescriber'),(df[segment_score]<=0.5), (df[segment_score]>0.5) & (df[segment_score]<=0.8), (df[segment_score]>0.8)]
         values2 = ['No NrX', 'Low NrX', 'Med NrX', 'High NrX']
         df['NrX Prob Tiers']=np.select(condition2, values2)
-                                                    
+
+        df['Competitive Prescriber Segment'] = 'searching'
         condition3 = [(df[competitive_flag]=='N'),(df[compeitive_prescriber_score]<=0.3), (df[compeitive_prescriber_score]>0.3) & (df[compeitive_prescriber_score]<=0.5), (df[compeitive_prescriber_score]>0.5)]
         values3 = ['Non-Comp-Prescbr', 'Low-Comp-Prescbr', 'Med-Comp-Prescbr', 'High-Comp-Prescbr']
         df['Competitive Prescriber Segment']=np.select(condition3, values3)
-        
+
+        df['Referring HCP'] = 'searching'
         condition4 = [(df[referral_flag] is None),(df[referral_flag]=='Y'), (df[referral_flag]=='N')]
         values4 = ['No Data', 'Referring', 'Non Referring']                                           
         df['Referring HCP']=np.select(condition4, values4)
