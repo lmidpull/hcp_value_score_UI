@@ -85,7 +85,7 @@ if st.session_state.submitted:
         cols = [segment_label, 'NrX Prob Tiers', 'TrX Forecast Label','Competitive Prescriber Segment','Referring HCP']
         df['Lookup String'] = df[cols].apply(lambda row: '| '.join(row.values.astype(str)), axis=1)
         
-        df_mapping = pd.read_excel("phases_mapping.xlsx")
+        df_mapping = pd.read_excel(r"https://github.com/lmidpull/hcp_value_score_UI/blob/main/phases_mapping.xlsx")
         
         df_mapping['String for Vlookup']= df_mapping['String for Vlookup'].str.strip()
         df['Lookup String'] = df['Lookup String'].str.strip()
