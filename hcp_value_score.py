@@ -101,7 +101,7 @@ if st.session_state.submitted:
         
         
         st.subheader("HCP Value Score Raw Data", divider=True)
-        st.dataframe(df)
+        st.dataframe(df.head(10))
         csv = convert_df(df)
         st.download_button(
         label="Download HCP Value Score Raw Data",
@@ -192,7 +192,7 @@ if st.session_state.submitted:
             df.loc[df[client_segment] == x, "Score Distribution"] = df['norm_score']/total_score
             df.loc[df[client_segment] == x, "Budget"] =  df['Score Distribution']*budget
             key_count = key_count+1
-        st.dataframe(df)
+        st.dataframe(df.head(10))
         csv_final = convert_df(df)
         st.download_button(
         label="Download HCP Level Budget",
@@ -206,7 +206,7 @@ if st.session_state.submitted:
         options = st.multiselect("Select all relevant columns (make sure to include NPI Number and Client segment (if required) ): ",df.columns,)
         st.write("You selected:", options)
         df = df.drop(columns=[col for col in df if col not in options])
-        st.dataframe(df)
+        st.dataframe(df.head(10))
         metrics = st.multiselect("Select Metrics To Use For HCP Value Score Calculations (only measurable fields ie Segment Score, Forecast 3 months etc..): ",options,)
         list1 = []
 
@@ -221,7 +221,7 @@ if st.session_state.submitted:
         df["norm_score"]=(df['log_score'] - df['log_score'].min()) / (df['log_score'].max() - df['log_score'].min())
         
         st.subheader("HCP Value Score Raw Data", divider=True)
-        st.dataframe(df)
+        st.dataframe(df.head(10))
         csv = convert_df(df)
         st.download_button(
         label="Download HCP Value Score Raw Data",
@@ -308,7 +308,7 @@ if st.session_state.submitted:
             df.loc[df[client_segment] == x, "Score Distribution"] = df['norm_score']/total_score
             df.loc[df[client_segment] == x, "Budget"] =  df['Score Distribution']*budget
             key_count = key_count+1
-        st.dataframe(df)
+        st.dataframe(df.head(10))
         csv_final = convert_df(df)
         st.download_button(
         label="Download HCP Level Budget",
