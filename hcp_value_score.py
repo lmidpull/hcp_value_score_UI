@@ -33,7 +33,7 @@ if st.session_state.submitted:
         options = st.multiselect("Select all relevant columns (make sure to include NPI Number, Client Segment, Segment_Label, Referral Flag, Competitive Prescriber Flag, Competitive Prescriber Score, Segment Score, and Forecast 3 months ): ",df.columns,)
         st.write("You selected:", options)
         df = df.drop(columns=[col for col in df if col not in options])
-        st.dataframe(df)
+        st.dataframe(df.head(10))
         metrics = st.multiselect("Select Metrics To Use For HCP Value Score Calculations (only measurable fields ie Segment Score, Forecast 3 months etc..): ",options,)
         list1 = []
         segment_label = st.selectbox("Choose Segment Label Column", df.columns, index=None,key=10000)
