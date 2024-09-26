@@ -129,6 +129,9 @@ if st.session_state.submitted:
         st.dataframe(df_count)
 
         df_count_2=df.groupby([phase])[npi].count().reset_index()
+        total = df_count_2=[npi].count()
+        df_count_2['% Breakdown'] = (df_count_2[npi]/total)*100
+        
         st.dataframe(df_count_2)
 
         fig = px.pie(df_count_2, values=npi, names=phase, title="Total NPIs by Phase",)
