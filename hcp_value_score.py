@@ -108,10 +108,11 @@ if st.session_state.submitted:
         data=csv,
         file_name="large_df.csv",
         mime="text/csv",)
-        
+
         phase = st.selectbox("Choose column name with phase information: ", df.columns, index=None,key=30000)
         npi = st.selectbox("Choose column name with NPI Number: ", df.columns, index=None,key=30001)
-        df_count=df.groupby([phase])[npi].count().reset_index()
+        client_segment = st.text_input("Enter Client Segment Column: ")
+        df_count=df.groupby([client_segment,phase])[npi].count().reset_index()
         st.dataframe(df_count)
         
         
@@ -121,7 +122,7 @@ if st.session_state.submitted:
             return new_cmap
 
     #Input the segment labels below
-        client_segment = st.text_input("Enter Client Segment Column: ")
+        #client_segment = st.text_input("Enter Client Segment Column: ")
         #npi_number = st.text_input("Enter NPI Column: ")
         df1=df.groupby([client_segment])[npi].count()
         df2=df.groupby([client_segment])['norm_score'].mean()
