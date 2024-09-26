@@ -69,7 +69,7 @@ if st.session_state.submitted:
 
         df['Referring HCP'] = 'searching'
         df['Referring HCP'] =  df['Referring HCP'].astype('str')
-        condition4 = [(df[referral_flag] is None),(df[referral_flag]=='Y'), (df[referral_flag]=='N')]
+        condition4 = [(df[referral_flag] == ''),(df[referral_flag]=='Y'), (df[referral_flag]=='N')]
         values4 = ['No Data', 'Referring', 'Non Referring']                                           
         df['Referring HCP']=np.select(condition4, values4, default=np.array(['default']))
         
