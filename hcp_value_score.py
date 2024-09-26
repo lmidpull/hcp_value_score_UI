@@ -131,7 +131,7 @@ if st.session_state.submitted:
         df_count_2=df.groupby([phase])[npi].count()
         st.dataframe(df_count_2)
 
-        fig = px.pie(df_count_2, values='Total NPIs', names='Phases', title="Total NPIs by Phase",)
+        fig = px.pie(df_count_2, values=npi, names=phase, title="Total NPIs by Phase",)
         st.plotly_chart(fig, theme=None)
         
        #gradient graph calculations begin here
