@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.ticker import ScalarFormatter, FormatStrFormatter
 import seaborn as sns
+import plotly.express as px
+
 @st.cache_data
 def convert_df(df):
     # IMPORTANT: Cache the conversion to prevent computation on every rerun
@@ -125,6 +127,12 @@ if st.session_state.submitted:
         client_segment = st.text_input("Enter Client Segment Column: ")
         df_count=df.groupby([client_segment,phase])[npi].count()
         st.dataframe(df_count)
+
+        df_count_2=df.groupby([phase])[npi].count()
+        st.dataframe(df_count_2)
+
+        fig = px.pie(df_count_2, values='Total NPIs', names='Phases', title="Total NPIs by Phase",)
+        st.plotly_chart(fig, theme=None)
         
        #gradient graph calculations begin here
         def truncate_colormap(cmap, min_val=0.0, max_val=1.0, n=100):
