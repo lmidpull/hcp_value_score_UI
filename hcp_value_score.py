@@ -112,7 +112,7 @@ if st.session_state.submitted:
         phase = st.selectbox("Choose column name with phase information: ", df.columns, index=None,key=30000)
         npi = st.selectbox("Choose column name with NPI Number: ", df.columns, index=None,key=30001)
         client_segment = st.text_input("Enter Client Segment Column: ")
-        df_count=df.groupby([client_segment,phase])[npi].count().reset_index()
+        df_count=df.groupby([client_segment,phase])[npi].count()
         st.dataframe(df_count)
         
         
