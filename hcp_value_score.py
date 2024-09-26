@@ -53,25 +53,25 @@ if st.session_state.submitted:
         df['High Value Category'] =  df['High Value Category'].astype('str')
         condition = [(df[segment_label]=='CHURNED'),(df[segment_label]=='CTL_NON_FIRST_TIME'), (df[segment_label]=='CTL_MAYBE_FIRST_TIME'), (df[segment_label]=='FIRST_TIME'), (df[segment_label]=='DECLINING'), (df[segment_label]=='NEUTRAL'), (df[segment_label]=='GROWING')]
         values = ['CHURNED', 'Non-Prescriber', 'Non-Prescriber', 'Non-Prescriber', 'Prescriber', 'Prescriber', 'Prescriber']
-        df['High Value Category']=  np.select(condition, values) 
+        df['High Value Category']=  np.select(condition, values, default=np.array(['default'])) 
 
         df['NrX Prob Tiers']='searching'
         df['NrX Prob Tiers']=df['NrX Prob Tiers'].astype('str')
         condition2 = [(df['High Value Category']!='Non-Prescriber'),(df[segment_score]<=0.5), (df[segment_score]>0.5) & (df[segment_score]<=0.8), (df[segment_score]>0.8)]
         values2 = ['No NrX', 'Low NrX', 'Med NrX', 'High NrX']
-        df['NrX Prob Tiers']=np.select(condition2, values2)
+        df['NrX Prob Tiers']=np.select(condition2, values2, default=np.array(['default']))
 
         df['Competitive Prescriber Segment'] = 'searching'
         df['Competitive Prescriber Segment'] = df['Competitive Prescriber Segment'].astype('str')
         condition3 = [(df[competitive_flag]=='N'),(df[compeitive_prescriber_score]<=0.3), (df[compeitive_prescriber_score]>0.3) & (df[compeitive_prescriber_score]<=0.5), (df[compeitive_prescriber_score]>0.5)]
         values3 = ['Non-Comp-Prescbr', 'Low-Comp-Prescbr', 'Med-Comp-Prescbr', 'High-Comp-Prescbr']
-        df['Competitive Prescriber Segment']=np.select(condition3, values3)
+        df['Competitive Prescriber Segment']=np.select(condition3, values3, default=np.array(['default']))
 
         df['Referring HCP'] = 'searching'
         df['Referring HCP'] =  df['Referring HCP'].astype('str')
         condition4 = [(df[referral_flag] is None),(df[referral_flag]=='Y'), (df[referral_flag]=='N')]
         values4 = ['No Data', 'Referring', 'Non Referring']                                           
-        df['Referring HCP']=np.select(condition4, values4)
+        df['Referring HCP']=np.select(condition4, values4, default=np.array(['default']))
         
         def normal_dist(x, mean, sd):
             prob_density = (np.pi*sd) * np.exp(-0.5*((x-mean)/sd)**2)
@@ -81,7 +81,7 @@ if st.session_state.submitted:
             df['forecast Norm used in phase calculations'] = normal_dist(df[forecast+" min-max norm"], df[forecast+" min-max norm"].mean(), df[forecast+" min-max norm"].std())
         condition5 = [(df['High Value Category']=='Non-Prescriber'),(df['forecast Norm used in phase calculations']<=0.75), (df['forecast Norm used in phase calculations']>0.75) & (df['forecast Norm used in phase calculations']<=0.95), (df['forecast Norm used in phase calculations']>0.95)]
         values5 = ['No TrX', 'Low TrX', 'Med TrX', 'High TrX']
-        df['TrX Forecast Label']=np.select(condition5, values5)
+        df['TrX Forecast Label']=np.select(condition5, values5, default=np.array(['default']))
         
         df['sum of metrics'] = df[list1].sum(axis=1)
         df['log_score'] = np.log2(1+df['sum of metrics'])
