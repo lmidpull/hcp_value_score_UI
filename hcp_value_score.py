@@ -71,7 +71,7 @@ if st.session_state.submitted:
         df['Referring HCP'] =  df['Referring HCP'].astype('str')
         condition4 = [(df[referral_flag] == ''),(df[referral_flag]=='Y'), (df[referral_flag]=='N')]
         values4 = ['No Data', 'Referring', 'Non Referring']                                           
-        df['Referring HCP']=np.select(condition4, values4, default=np.array(['default']))
+        df['Referring HCP']=np.select(condition4, values4)
         
         def normal_dist(x, mean, sd):
             prob_density = (np.pi*sd) * np.exp(-0.5*((x-mean)/sd)**2)
