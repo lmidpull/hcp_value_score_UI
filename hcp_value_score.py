@@ -128,7 +128,7 @@ if st.session_state.submitted:
         df_count=df.groupby([client_segment,phase])[npi].count()
         st.dataframe(df_count)
 
-        df_count_2=df.groupby([phase])[npi].count()
+        df_count_2=df.groupby([phase])[npi].count().reset_index()
         st.dataframe(df_count_2)
 
         fig = px.pie(df_count_2, values=npi, names=phase, title="Total NPIs by Phase",)
