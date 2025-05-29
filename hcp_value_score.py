@@ -13,10 +13,130 @@ def convert_df(df):
     # IMPORTANT: Cache the conversion to prevent computation on every rerun
     return df.to_csv().encode("utf-8")
 
+@st.cache_data
+def load_excel_file(uploaded_file):
+    """Cache Excel file loading to avoid re-reading on every interaction"""
+    return pd.read_excel(uploaded_file)
+
+@st.cache_data
+def load_mapping_file():
+    """Cache mapping file loading"""
+    return pd.read_excel("phases_mapping.xlsx")
+
+def optimize_dataframe_memory(df):
+    """Optimize DataFrame memory usage by downcasting numeric types"""
+    for col in df.columns:
+        if df[col].dtype == 'float64':
+            df[col] = pd.to_numeric(df[col], downcast='float')
+        elif df[col].dtype == 'int64':
+            df[col] = pd.to_numeric(df[col], downcast='integer')
+    return df
+
+def calculate_hcp_value_score_vectorized(df, metrics, weights):
+    """Vectorized calculation of HCP value scores"""
+    list1 = []
+    
+    # Process all metrics in one go using vectorized operations
+    for i, metric in enumerate(metrics):
+        # Log normalization
+        df[f"{metric} log norm"] = np.log2(1 + df[metric])
+        
+        # Min-max normalization
+        log_col = f"{metric} log norm"
+        min_val = df[log_col].min()
+        max_val = df[log_col].max()
+        df[f"{metric} min-max norm"] = (df[log_col] - min_val) / (max_val - min_val)
+        
+        # Apply weight
+        weight_col = f"{metric} calculation with weight"
+        df[weight_col] = df[f"{metric} min-max norm"] * weights[i]
+        list1.append(weight_col)
+    
+    return df, list1
+
+def calculate_phases_vectorized(df, segment_label, competitive_flag, competitive_prescriber_score, 
+                              referral_flag, segment_score, forecast):
+    """Vectorized phase calculations"""
+    
+    # High Value Category calculation
+    conditions = [
+        df[segment_label] == 'CHURNED',
+        df[segment_label].isin(['CTL_NON_FIRST_TIME', 'CTL_MAYBE_FIRST_TIME', 'FIRST_TIME']),
+        df[segment_label].isin(['DECLINING', 'NEUTRAL', 'GROWING'])
+    ]
+    values = ['CHURNED', 'Non-Prescriber', 'Prescriber']
+    df['High Value Category'] = np.select(conditions, values, default='default')
+
+    # NrX Prob Tiers calculation
+    conditions2 = [
+        df['High Value Category'] == 'Non-Prescriber',
+        df[segment_score] <= 0.5,
+        (df[segment_score] > 0.5) & (df[segment_score] <= 0.8),
+        df[segment_score] > 0.8
+    ]
+    values2 = ['No NrX', 'Low NrX', 'Med NrX', 'High NrX']
+    df['NrX Prob Tiers'] = np.select(conditions2, values2, default='default')
+
+    # Competitive Prescriber Segment calculation
+    conditions3 = [
+        df[competitive_flag] == 'N',
+        df[competitive_prescriber_score] <= 0.3,
+        (df[competitive_prescriber_score] > 0.3) & (df[competitive_prescriber_score] <= 0.5),
+        df[competitive_prescriber_score] > 0.5
+    ]
+    values3 = ['Non-Comp-Prescbr', 'Low-Comp-Prescbr', 'Med-Comp-Prescbr', 'High-Comp-Prescbr']
+    df['Competitive Prescriber Segment'] = np.select(conditions3, values3, default='default')
+
+    # Referring HCP calculation
+    conditions4 = [
+        df[referral_flag].isnull(),
+        df[referral_flag] == 'Y',
+        df[referral_flag] == 'N'
+    ]
+    values4 = ['No Data', 'Referring', 'Non Referring']
+    df['Referring HCP'] = np.select(conditions4, values4, default='default')
+    
+    # Forecast calculations - vectorized normal distribution
+    forecast_norm_col = f"{forecast} min-max norm"
+    mean_val = df[forecast_norm_col].mean()
+    std_val = df[forecast_norm_col].std()
+    
+    df['forecast Norm used in phase calculations'] = (
+        (np.pi * std_val) * np.exp(-0.5 * ((df[forecast_norm_col] - mean_val) / std_val) ** 2)
+    )
+    
+    conditions5 = [
+        df['High Value Category'] == 'Non-Prescriber',
+        df['forecast Norm used in phase calculations'] <= 0.75,
+        (df['forecast Norm used in phase calculations'] > 0.75) & (df['forecast Norm used in phase calculations'] <= 0.95),
+        df['forecast Norm used in phase calculations'] > 0.95
+    ]
+    values5 = ['No TrX', 'Low TrX', 'Med TrX', 'High TrX']
+    df['TrX Forecast Label'] = np.select(conditions5, values5, default='default')
+    
+    return df
+
+def process_budget_calculations_vectorized(df, client_segment, npi, campaign_budget):
+    """Vectorized budget calculations"""
+    # Use more efficient groupby operations
+    df_grouped = df.groupby(client_segment).agg({
+        npi: 'count',
+        'norm_score': 'mean'
+    }).reset_index()
+    
+    df_grouped.columns = [client_segment, 'Count of NPIs', 'Average Hcp Value Score']
+    
+    # Vectorized budget calculations
+    df_grouped['Score Dist'] = df_grouped['Average Hcp Value Score'] / df_grouped['Average Hcp Value Score'].sum()
+    df_grouped['Score Dist*Count'] = df_grouped['Score Dist'] * df_grouped['Count of NPIs']
+    df_grouped['% Budget Allocation'] = df_grouped['Score Dist*Count'] / df_grouped['Score Dist*Count'].sum()
+    df_grouped['Budget Per Segment'] = df_grouped['% Budget Allocation'] * campaign_budget
+    df_grouped['Average Budget Per HCP'] = df_grouped['Budget Per Segment'] / df_grouped['Count of NPIs']
+    
+    return df_grouped
 
 st.title("HCP Value Score & M1 Budget Calculator")
 uploaded_file = st.file_uploader("Upload the file: ", type=['xlsx', 'xls'])
-#df = pd.read_excel(uploaded_file)
 
 if 'submitted' not in st.session_state:
     st.session_state.submitted = False
@@ -24,335 +144,338 @@ if 'submitted' not in st.session_state:
 def submitted():
     st.session_state.submitted = True
 
-st.button('Submit', on_click = submitted, key=1)
+st.button('Submit', on_click=submitted, key=1)
 
-if st.session_state.submitted:
+if st.session_state.submitted and uploaded_file is not None:
     phases = st.checkbox("Calculations with M1 Phases")
     no_phases = st.checkbox("Calculations without M1 Phases")
+    
     if phases:
-        #Code below includes all parts related to M1 phase calculations
-        
         st.write("Calculations with M1 Phases")
-        df = pd.read_excel(uploaded_file)
+        
+        # Load and optimize data
+        with st.spinner("Loading data..."):
+            df = load_excel_file(uploaded_file)
+            df = optimize_dataframe_memory(df)
+        
+        st.success(f"Loaded {len(df):,} rows")
 
-        #column selection to allow for any file regardless of file name to work with the script
-        options = st.multiselect("Select all relevant columns (make sure to include NPI Number, Client Segment, Segment_Label, Referral Flag, Competitive Prescriber Flag, Competitive Prescriber Score, Segment Score, and Forecast 3 months ): ",df.columns,)
-        st.write("You selected:", options)
-        df = df.drop(columns=[col for col in df if col not in options])
-        st.dataframe(df.head(10))
+        # Column selection
+        options = st.multiselect(
+            "Select all relevant columns (make sure to include NPI Number, Client Segment, Segment_Label, Referral Flag, Competitive Prescriber Flag, Competitive Prescriber Score, Segment Score, and Forecast 3 months): ",
+            df.columns
+        )
+        
+        if options:
+            st.write("You selected:", options)
+            df = df[options].copy()  # More efficient than dropping columns
+            st.dataframe(df.head(10))
 
-        #metric and column selection to make sure correct columns are used for hcp value score and phase calculations
-        metrics = st.multiselect("Select Metrics To Use For HCP Value Score Calculations (only measurable fields ie Segment Score, Forecast 3 months etc..): ",options,)
-        list1 = []
-        segment_label = st.selectbox("Choose Segment Label Column", df.columns, index=None,key=10000)
-        competitive_flag =  st.selectbox("Choose Competitive Pres Flag Column", df.columns, index=None,key=10001)
-        compeitive_prescriber_score = st.selectbox("Choose Competive Pres Score Column", df.columns, index=None,key=10002)
-        referral_flag =  st.selectbox("Choose Referral Flag Column", df.columns, index=None,key=10003)
-        segment_score =  st.selectbox("Choose Segment Score Column", df.columns, index=None,key=10004)
-        forecast = st.selectbox("Choose Forecast 3 Months Mean Column", df.columns, index=None,key=10005)
-        
-        #hcp value score calculations begin here
-        for x in metrics:
-            df[x+" log norm"]=np.log2(1+(df[x]))
-            df[x+" min-max norm"] = (df[x+" log norm"]-  df[x+" log norm"].min()) / ( df[x+" log norm"].max() -  df[x+" log norm"].min())
-            weight = st.number_input("Enter the weight you want to use for: "+ x)
-            df[x+ " calculation with weight"] = df[x+" min-max norm"] * float(weight)
-            list1.append(x+ " calculation with weight")
-        
-        #m1 phase calculations begin here
-        df['High Value Category'] = 'searching'
-        df['High Value Category'] =  df['High Value Category'].astype('str')
-        condition = [(df[segment_label]=='CHURNED'),(df[segment_label]=='CTL_NON_FIRST_TIME'), (df[segment_label]=='CTL_MAYBE_FIRST_TIME'), (df[segment_label]=='FIRST_TIME'), (df[segment_label]=='DECLINING'), (df[segment_label]=='NEUTRAL'), (df[segment_label]=='GROWING')]
-        values = ['CHURNED', 'Non-Prescriber', 'Non-Prescriber', 'Non-Prescriber', 'Prescriber', 'Prescriber', 'Prescriber']
-        df['High Value Category']=  np.select(condition, values, default=np.array(['default'])) 
-
-        df['NrX Prob Tiers']='searching'
-        df['NrX Prob Tiers']=df['NrX Prob Tiers'].astype('str')
-        condition2 = [(df['High Value Category']!='Non-Prescriber'),(df[segment_score]<=0.5), (df[segment_score]>0.5) & (df[segment_score]<=0.8), (df[segment_score]>0.8)]
-        values2 = ['No NrX', 'Low NrX', 'Med NrX', 'High NrX']
-        df['NrX Prob Tiers']=np.select(condition2, values2, default=np.array(['default']))
-
-        df['Competitive Prescriber Segment'] = 'searching'
-        df['Competitive Prescriber Segment'] = df['Competitive Prescriber Segment'].astype('str')
-        condition3 = [(df[competitive_flag]=='N'),(df[compeitive_prescriber_score]<=0.3), (df[compeitive_prescriber_score]>0.3) & (df[compeitive_prescriber_score]<=0.5), (df[compeitive_prescriber_score]>0.5)]
-        values3 = ['Non-Comp-Prescbr', 'Low-Comp-Prescbr', 'Med-Comp-Prescbr', 'High-Comp-Prescbr']
-        df['Competitive Prescriber Segment']=np.select(condition3, values3, default=np.array(['default']))
-
-        df['Referring HCP'] = 'searching'
-        df['Referring HCP'] =  df['Referring HCP'].astype('str')
-        condition4 = [(df[referral_flag].isnull()),(df[referral_flag]=='Y'), (df[referral_flag]=='N')]
-        values4 = ['No Data', 'Referring', 'Non Referring']                                           
-        df['Referring HCP']=np.select(condition4, values4, default=np.array(['default']))
-        
-        def normal_dist(x, mean, sd):
-            prob_density = (np.pi*sd) * np.exp(-0.5*((x-mean)/sd)**2)
-            return prob_density                                            
-        
-        for x in df[forecast+" min-max norm"]:  
-            df['forecast Norm used in phase calculations'] = normal_dist(df[forecast+" min-max norm"], df[forecast+" min-max norm"].mean(), df[forecast+" min-max norm"].std())
-        condition5 = [(df['High Value Category']=='Non-Prescriber'),(df['forecast Norm used in phase calculations']<=0.75), (df['forecast Norm used in phase calculations']>0.75) & (df['forecast Norm used in phase calculations']<=0.95), (df['forecast Norm used in phase calculations']>0.95)]
-        values5 = ['No TrX', 'Low TrX', 'Med TrX', 'High TrX']
-        df['TrX Forecast Label']=np.select(condition5, values5, default=np.array(['default']))
-        
-        df['sum of metrics'] = df[list1].sum(axis=1)
-        df['log_score'] = np.log2(1+df['sum of metrics'])
-        df["norm_score"]=(df['log_score'] - df['log_score'].min()) / (df['log_score'].max() - df['log_score'].min())
-        
-        df.loc[df['NrX Prob Tiers'] == '0', 'NrX Prob Tiers'] = 'No NrX'
-        df.loc[df['Referring HCP'] == '0', 'Referring HCP'] = 'No Data'
-        
-        cols = [segment_label, 'NrX Prob Tiers', 'TrX Forecast Label','Competitive Prescriber Segment','Referring HCP']
-        df['Lookup String'] = df[cols].apply(lambda row: '| '.join(row.values.astype(str)), axis=1)
-        
-        df_mapping = pd.read_excel("phases_mapping.xlsx")
-        
-        df_mapping['String for Vlookup']= df_mapping['String for Vlookup'].str.strip()
-        df['Lookup String'] = df['Lookup String'].str.strip()
-        df=pd.merge(df, df_mapping, left_on = 'Lookup String', right_on = 'String for Vlookup', how = 'left')
-      
-        #hcp value score and m1 phase calculations end here
-        
-        st.subheader("HCP Value Score Raw Data", divider=True)
-        st.dataframe(df.head(10))
-        csv = convert_df(df)
-        st.download_button(
-        label="Download HCP Value Score Raw Data",
-        data=csv,
-        file_name="large_df.csv",
-        mime="text/csv",)
-
-        #selection below so that grouped by table is pulling from the correct phase and npi column
-        phase = st.selectbox("Choose column name with phase information: ", df.columns, index=None,key=30000)
-        npi = st.selectbox("Choose column name with NPI Number: ", df.columns, index=None,key=30001)
-        client_segment = st.text_input("Enter Client Segment Column: ")
-        df_count=df.groupby([client_segment,phase])[npi].count()
-        st.dataframe(df_count)
-
-        df_count_2=df.groupby([phase])[npi].count().reset_index()
-        total = df_count_2[npi].sum()
-        df_count_2['% Breakdown'] = (df_count_2[npi]/total)*100
-        
-        st.dataframe(df_count_2)
-
-        fig = px.pie(df_count_2, values=npi, names=phase, title="Total NPIs by Phase",)
-        st.plotly_chart(fig, theme=None)
-        
-       #gradient graph calculations begin here
-        def truncate_colormap(cmap, min_val=0.0, max_val=1.0, n=100):
-            new_cmap = colors.LinearSegmentedColormap.from_list('trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=min_val, b=max_val),
-            cmap(np.linspace(min_val, max_val, n)))
-            return new_cmap
-
-    #Input the segment labels below
-        #client_segment = st.text_input("Enter Client Segment Column: ")
-        #npi_number = st.text_input("Enter NPI Column: ")
-
-        #segment level budget allocation calculations begin here
-        df1=df.groupby([client_segment])[npi].count()
-        df2=df.groupby([client_segment])['norm_score'].mean()
-        df3=pd.concat([df1,df2],axis=1).reset_index().rename(columns={npi:'Count of NPIs', 'norm_score': 'Average Hcp Value Score'})
-        df3['Score Dist'] = df3['Average Hcp Value Score']/(df3['Average Hcp Value Score'].sum())
-        df3['Score Dist*Count'] = df3['Score Dist']*df3['Count of NPIs']
-        campaign_budget = st.number_input("Enter Campaign Budget: ")
-        df3['% Budget Allocation'] = df3['Score Dist*Count']/(df3['Score Dist*Count'].sum())
-        df3['Budget Per Segment'] = df3['% Budget Allocation']*campaign_budget
-        df3['Average Budget Per HCP']= df3['Budget Per Segment']/df3['Count of NPIs']
-        
-        #segment level budget allocation calculations end here
-        
-        st.subheader("Segment Level Budget Allocation", divider=True)
-        st.dataframe(df3)
-        csv2 = convert_df(df3)
-        st.download_button(
-        label="Download Segment Level Budget Allocation",
-        data=csv2,
-        file_name="large_df.csv",
-        mime="text/csv",)
-        x = df3[client_segment]
-    # y2 is for gradient
-    #Input the hcp value scores cooresponding to the segment labels below
-        y2 = df3['Average Hcp Value Score']
-    # y is for y-axis
-
-    #Input the count of hcps in the cooresponding segment labels below
-        y = df3['Count of NPIs']
-        fig, ax = plt.subplots()
-    #bars = ax.bar(x, y, edgecolor = "black")
-        bars = ax.bar(x, y)
-        y_min, y_max = ax.get_ylim()
-        y_min2 = 0
-        y_max2 = max(y2)
-        grad = np.atleast_2d(np.linspace(0, 1, 256)).T
-        ax = bars[0].axes 
-        lim = ax.get_xlim()+ax.get_ylim()
-        x1=0
-        for bar in bars:
-            bar.set_zorder(1)  
-            bar.set_facecolor("none")  
-            x, _ = bar.get_xy()  
-            w, h = bar.get_width(), bar.get_height() 
-            h2 = y2[x1]
-            c_map = truncate_colormap(plt.cm.Blues, min_val=0,
-                                    max_val=(h2 - y_min2) / (y_max2 - y_min2))
-        #c_map = truncate_colormap(plt.cm.summer_r, min_val=0,
-        #                          max_val=(h2 - y_min2) / (y_max2 - y_min2))
-
-            ax.imshow(grad, extent=[x, x+w, h, y_min], aspect="auto", zorder=0,
-                cmap=c_map)
-            x1=x1+1
-        ax.axis(lim)
-        ax.spines.top.set_visible(False)
-        ax.spines.right.set_visible(False)
-        ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
-        plt.xticks(size = 15)
-        plt.yticks(size = 15)
-    #fig.autofmt_xdate() 
-        fig.set_size_inches(25, 15, forward=True)
-        st.subheader("Gradient Graph", divider=True)
-        st.pyplot(plt.gcf())
-        st.subheader("HCP Level Budget", divider=True)
-        key_count =100
-        df['Score Distribution']=0
-        df['Budget']=0
-        for x in df[client_segment].unique():
-            budget = st.number_input("Enter the segment level budget for: "+ x, key=key_count)
-            total_score =  df.loc[df[client_segment] == x, 'norm_score'].sum()
-            df.loc[df[client_segment] == x, "Score Distribution"] = df['norm_score']/total_score
-            df.loc[df[client_segment] == x, "Budget"] =  df['Score Distribution']*budget
-            key_count = key_count+1
-        st.dataframe(df.head(10))
-        csv_final = convert_df(df)
-        st.download_button(
-        label="Download HCP Level Budget",
-        data=csv_final,
-        file_name="large_df.csv",
-        mime="text/csv",)
-   #gradient graph code ends here
-    
-    if no_phases:
-        #Normal hcp value score and m1 calculations WITHOUT phases begins here
-        
-        st.write("Regular Calculations")
-        df = pd.read_excel(uploaded_file)
-        
-        #column selection to allow for any file regardless of file name to work with the script
-        options = st.multiselect("Select all relevant columns (make sure to include NPI Number and Client segment (if required) ): ",df.columns,)
-        st.write("You selected:", options)
-        df = df.drop(columns=[col for col in df if col not in options])
-        st.dataframe(df.head(10))
-        metrics = st.multiselect("Select Metrics To Use For HCP Value Score Calculations (only measurable fields ie Segment Score, Forecast 3 months etc..): ",options,)
-        list1 = []
-
-        #hcp value score calculations begin here
-        for x in metrics:
-            df[x+" log norm"]=np.log2(1+(df[x]))
-            df[x+" min-max norm"] = (df[x+" log norm"]-  df[x+" log norm"].min()) / ( df[x+" log norm"].max() -  df[x+" log norm"].min())
-            weight = st.number_input("Enter the weight you want to use for: "+ x)
-            df[x+ " calculation with weight"] = df[x+" min-max norm"] * float(weight)
-            list1.append(x+ " calculation with weight")
-        df['sum of metrics'] = df[list1].sum(axis=1)
-        df['log_score'] = np.log2(1+df['sum of metrics'])
-        df["norm_score"]=(df['log_score'] - df['log_score'].min()) / (df['log_score'].max() - df['log_score'].min())
-        
-        st.subheader("HCP Value Score Raw Data", divider=True)
-        st.dataframe(df.head(10))
-        csv = convert_df(df)
-        st.download_button(
-        label="Download HCP Value Score Raw Data",
-        data=csv,
-        file_name="large_df.csv",
-        mime="text/csv",)
-        #hcp value score calculations end here
-        
-        #gradient graph code begins here
-        def truncate_colormap(cmap, min_val=0.0, max_val=1.0, n=100):
-            new_cmap = colors.LinearSegmentedColormap.from_list('trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=min_val, b=max_val),
-            cmap(np.linspace(min_val, max_val, n)))
-            return new_cmap
+            # Metric selection
+            metrics = st.multiselect(
+                "Select Metrics To Use For HCP Value Score Calculations (only measurable fields ie Segment Score, Forecast 3 months etc..): ",
+                options
+            )
             
-        # Segment level budget allocation calculations begin here
-    #Input the segment labels below
-        client_segment = st.text_input("Enter Client Segment Column: ")
-        npi_number = st.text_input("Enter NPI Column: ")
-        df1=df.groupby([client_segment])[npi_number].count()
-        df2=df.groupby([client_segment])['norm_score'].mean()
-        df3=pd.concat([df1,df2],axis=1).reset_index().rename(columns={npi_number:'Count of NPIs', 'norm_score': 'Average Hcp Value Score'})
-        df3['Score Dist'] = df3['Average Hcp Value Score']/(df3['Average Hcp Value Score'].sum())
-        df3['Score Dist*Count'] = df3['Score Dist']*df3['Count of NPIs']
-        campaign_budget = st.number_input("Enter Campaign Budget: ")
-        df3['% Budget Allocation'] = df3['Score Dist*Count']/(df3['Score Dist*Count'].sum())
-        df3['Budget Per Segment'] = df3['% Budget Allocation']*campaign_budget
-        df3['Average Budget Per HCP']= df3['Budget Per Segment']/df3['Count of NPIs']
+            if metrics:
+                # Column mappings
+                segment_label = st.selectbox("Choose Segment Label Column", df.columns, index=None, key=10000)
+                competitive_flag = st.selectbox("Choose Competitive Pres Flag Column", df.columns, index=None, key=10001)
+                competitive_prescriber_score = st.selectbox("Choose Competitive Pres Score Column", df.columns, index=None, key=10002)
+                referral_flag = st.selectbox("Choose Referral Flag Column", df.columns, index=None, key=10003)
+                segment_score = st.selectbox("Choose Segment Score Column", df.columns, index=None, key=10004)
+                forecast = st.selectbox("Choose Forecast 3 Months Mean Column", df.columns, index=None, key=10005)
+                
+                # Collect all weights first
+                weights = []
+                for metric in metrics:
+                    weight = st.number_input(f"Enter the weight you want to use for: {metric}", min_value=0.0, step=0.1)
+                    weights.append(weight)
+                
+                if all(col is not None for col in [segment_label, competitive_flag, competitive_prescriber_score, referral_flag, segment_score, forecast]):
+                    with st.spinner("Calculating HCP Value Scores..."):
+                        # Vectorized HCP value score calculations
+                        df, list1 = calculate_hcp_value_score_vectorized(df, metrics, weights)
+                        
+                        # Calculate final scores
+                        df['sum of metrics'] = df[list1].sum(axis=1)
+                        df['log_score'] = np.log2(1 + df['sum of metrics'])
+                        df["norm_score"] = (df['log_score'] - df['log_score'].min()) / (df['log_score'].max() - df['log_score'].min())
+                    
+                    with st.spinner("Calculating M1 Phases..."):
+                        # Vectorized phase calculations
+                        df = calculate_phases_vectorized(df, segment_label, competitive_flag, 
+                                                       competitive_prescriber_score, referral_flag, 
+                                                       segment_score, forecast)
+                        
+                        # Fix specific values
+                        df.loc[df['NrX Prob Tiers'] == '0', 'NrX Prob Tiers'] = 'No NrX'
+                        df.loc[df['Referring HCP'] == '0', 'Referring HCP'] = 'No Data'
+                        
+                        # Create lookup string more efficiently
+                        cols = [segment_label, 'NrX Prob Tiers', 'TrX Forecast Label', 'Competitive Prescriber Segment', 'Referring HCP']
+                        df['Lookup String'] = df[cols].apply(lambda row: '| '.join(row.values.astype(str)), axis=1)
+                        
+                        # Load and merge mapping data
+                        df_mapping = load_mapping_file()
+                        df_mapping['String for Vlookup'] = df_mapping['String for Vlookup'].str.strip()
+                        df['Lookup String'] = df['Lookup String'].str.strip()
+                        df = pd.merge(df, df_mapping, left_on='Lookup String', right_on='String for Vlookup', how='left')
+                    
+                    st.subheader("HCP Value Score Raw Data", divider=True)
+                    st.dataframe(df.head(10))
+                    csv = convert_df(df)
+                    st.download_button(
+                        label="Download HCP Value Score Raw Data",
+                        data=csv,
+                        file_name="hcp_value_score_data.csv",
+                        mime="text/csv"
+                    )
 
-        #Segment level budget allocations end here
-        st.subheader("Segment Level Budget Allocation", divider=True)
-        st.dataframe(df3)
-        csv2 = convert_df(df3)
-        st.download_button(
-        label="Download Segment Level Budget Allocation",
-        data=csv2,
-        file_name="large_df.csv",
-        mime="text/csv",)
-        x = df3[client_segment]
-    # y2 is for gradient
-    #Input the hcp value scores cooresponding to the segment labels below
-        y2 = df3['Average Hcp Value Score']
-    # y is for y-axis
+                    # Phase analysis
+                    phase = st.selectbox("Choose column name with phase information: ", df.columns, index=None, key=30000)
+                    npi = st.selectbox("Choose column name with NPI Number: ", df.columns, index=None, key=30001)
+                    client_segment = st.text_input("Enter Client Segment Column: ")
+                    
+                    if phase and npi and client_segment:
+                        with st.spinner("Generating phase analysis..."):
+                            # More efficient groupby operations
+                            df_count = df.groupby([client_segment, phase])[npi].count()
+                            st.dataframe(df_count)
 
-    #Input the count of hcps in the cooresponding segment labels below
-        y = df3['Count of NPIs']
-        fig, ax = plt.subplots()
-    #bars = ax.bar(x, y, edgecolor = "black")
-        bars = ax.bar(x, y)
-        y_min, y_max = ax.get_ylim()
-        y_min2 = 0
-        y_max2 = max(y2)
-        grad = np.atleast_2d(np.linspace(0, 1, 256)).T
-        ax = bars[0].axes 
-        lim = ax.get_xlim()+ax.get_ylim()
-        x1=0
-        for bar in bars:
-            bar.set_zorder(1)  
-            bar.set_facecolor("none")  
-            x, _ = bar.get_xy()  
-            w, h = bar.get_width(), bar.get_height() 
-            h2 = y2[x1]
-            c_map = truncate_colormap(plt.cm.Blues, min_val=0,
-                                    max_val=(h2 - y_min2) / (y_max2 - y_min2))
-        #c_map = truncate_colormap(plt.cm.summer_r, min_val=0,
-        #                          max_val=(h2 - y_min2) / (y_max2 - y_min2))
+                            df_count_2 = df.groupby([phase])[npi].count().reset_index()
+                            total = df_count_2[npi].sum()
+                            df_count_2['% Breakdown'] = (df_count_2[npi] / total) * 100
+                            st.dataframe(df_count_2)
 
-            ax.imshow(grad, extent=[x, x+w, h, y_min], aspect="auto", zorder=0,
-                cmap=c_map)
-            x1=x1+1
-        ax.axis(lim)
-        ax.spines.top.set_visible(False)
-        ax.spines.right.set_visible(False)
-        ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
-        plt.xticks(size = 15)
-        plt.yticks(size = 15)
-    #fig.autofmt_xdate() 
-        fig.set_size_inches(25, 15, forward=True)
-        st.subheader("Gradient Graph", divider=True)
-        st.pyplot(plt.gcf())
-        st.subheader("HCP Level Budget", divider=True)
-        key_count =100
-        df['Score Distribution']=0
-        df['Budget']=0
-        for x in df[client_segment].unique():
-            budget = st.number_input("Enter the segment level budget for: "+ x, key=key_count)
-            total_score =  df.loc[df[client_segment] == x, 'norm_score'].sum()
-            df.loc[df[client_segment] == x, "Score Distribution"] = df['norm_score']/total_score
-            df.loc[df[client_segment] == x, "Budget"] =  df['Score Distribution']*budget
-            key_count = key_count+1
-        st.dataframe(df.head(10))
-        csv_final = convert_df(df)
-        st.download_button(
-        label="Download HCP Level Budget",
-        data=csv_final,
-        file_name="large_df.csv",
-        mime="text/csv",)
+                            fig = px.pie(df_count_2, values=npi, names=phase, title="Total NPIs by Phase")
+                            st.plotly_chart(fig, theme=None)
+                        
+                        # Budget calculations
+                        campaign_budget = st.number_input("Enter Campaign Budget: ", min_value=0.0)
+                        
+                        if campaign_budget > 0:
+                            with st.spinner("Calculating budget allocations..."):
+                                df3 = process_budget_calculations_vectorized(df, client_segment, npi, campaign_budget)
+                                
+                                st.subheader("Segment Level Budget Allocation", divider=True)
+                                st.dataframe(df3)
+                                csv2 = convert_df(df3)
+                                st.download_button(
+                                    label="Download Segment Level Budget Allocation",
+                                    data=csv2,
+                                    file_name="segment_budget_allocation.csv",
+                                    mime="text/csv"
+                                )
+
+                                # Gradient graph (optimized)
+                                def truncate_colormap(cmap, min_val=0.0, max_val=1.0, n=100):
+                                    new_cmap = colors.LinearSegmentedColormap.from_list(
+                                        'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=min_val, b=max_val),
+                                        cmap(np.linspace(min_val, max_val, n))
+                                    )
+                                    return new_cmap
+
+                                x = df3[client_segment]
+                                y2 = df3['Average Hcp Value Score']
+                                y = df3['Count of NPIs']
+                                
+                                fig, ax = plt.subplots(figsize=(15, 10))  # Smaller default size
+                                bars = ax.bar(x, y)
+                                y_min, y_max = ax.get_ylim()
+                                y_min2 = 0
+                                y_max2 = max(y2)
+                                grad = np.atleast_2d(np.linspace(0, 1, 256)).T
+                                
+                                for i, bar in enumerate(bars):
+                                    bar.set_zorder(1)
+                                    bar.set_facecolor("none")
+                                    x_pos, _ = bar.get_xy()
+                                    w, h = bar.get_width(), bar.get_height()
+                                    h2 = y2.iloc[i]
+                                    c_map = truncate_colormap(plt.cm.Blues, min_val=0,
+                                                            max_val=(h2 - y_min2) / (y_max2 - y_min2))
+                                    ax.imshow(grad, extent=[x_pos, x_pos+w, h, y_min], aspect="auto", zorder=0, cmap=c_map)
+                                
+                                ax.spines.top.set_visible(False)
+                                ax.spines.right.set_visible(False)
+                                ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
+                                plt.xticks(size=12)
+                                plt.yticks(size=12)
+                                
+                                st.subheader("Gradient Graph", divider=True)
+                                st.pyplot(fig)
+
+                                # HCP Level Budget calculation (optimized)
+                                st.subheader("HCP Level Budget", divider=True)
+                                
+                                # Collect all segment budgets first
+                                segment_budgets = {}
+                                key_count = 100
+                                for segment in df[client_segment].unique():
+                                    budget = st.number_input(f"Enter the segment level budget for: {segment}", 
+                                                           min_value=0.0, key=key_count)
+                                    segment_budgets[segment] = budget
+                                    key_count += 1
+                                
+                                # Vectorized budget calculation per HCP
+                                df['Score Distribution'] = 0.0
+                                df['Budget'] = 0.0
+                                
+                                for segment, budget in segment_budgets.items():
+                                    if budget > 0:
+                                        mask = df[client_segment] == segment
+                                        total_score = df.loc[mask, 'norm_score'].sum()
+                                        if total_score > 0:
+                                            df.loc[mask, "Score Distribution"] = df.loc[mask, 'norm_score'] / total_score
+                                            df.loc[mask, "Budget"] = df.loc[mask, 'Score Distribution'] * budget
+                                
+                                st.dataframe(df.head(10))
+                                csv_final = convert_df(df)
+                                st.download_button(
+                                    label="Download HCP Level Budget",
+                                    data=csv_final,
+                                    file_name="hcp_level_budget.csv",
+                                    mime="text/csv"
+                                )
+
+    if no_phases:
+        st.write("Regular Calculations")
         
-        #gradient graph code ends here
-    
-    
+        with st.spinner("Loading data..."):
+            df = load_excel_file(uploaded_file)
+            df = optimize_dataframe_memory(df)
+        
+        st.success(f"Loaded {len(df):,} rows")
+        
+        # Column selection
+        options = st.multiselect(
+            "Select all relevant columns (make sure to include NPI Number and Client segment (if required)): ",
+            df.columns
+        )
+        
+        if options:
+            st.write("You selected:", options)
+            df = df[options].copy()
+            st.dataframe(df.head(10))
+            
+            metrics = st.multiselect(
+                "Select Metrics To Use For HCP Value Score Calculations (only measurable fields ie Segment Score, Forecast 3 months etc..): ",
+                options
+            )
+            
+            if metrics:
+                # Collect all weights first
+                weights = []
+                for metric in metrics:
+                    weight = st.number_input(f"Enter the weight you want to use for: {metric}", min_value=0.0, step=0.1)
+                    weights.append(weight)
+                
+                with st.spinner("Calculating HCP Value Scores..."):
+                    # Vectorized HCP value score calculations
+                    df, list1 = calculate_hcp_value_score_vectorized(df, metrics, weights)
+                    
+                    df['sum of metrics'] = df[list1].sum(axis=1)
+                    df['log_score'] = np.log2(1 + df['sum of metrics'])
+                    df["norm_score"] = (df['log_score'] - df['log_score'].min()) / (df['log_score'].max() - df['log_score'].min())
+                
+                st.subheader("HCP Value Score Raw Data", divider=True)
+                st.dataframe(df.head(10))
+                csv = convert_df(df)
+                st.download_button(
+                    label="Download HCP Value Score Raw Data",
+                    data=csv,
+                    file_name="hcp_value_score_data.csv",
+                    mime="text/csv"
+                )
+                
+                # Budget calculations
+                client_segment = st.text_input("Enter Client Segment Column: ")
+                npi_number = st.text_input("Enter NPI Column: ")
+                
+                if client_segment and npi_number and client_segment in df.columns and npi_number in df.columns:
+                    campaign_budget = st.number_input("Enter Campaign Budget: ", min_value=0.0)
+                    
+                    if campaign_budget > 0:
+                        with st.spinner("Calculating budget allocations..."):
+                            df3 = process_budget_calculations_vectorized(df, client_segment, npi_number, campaign_budget)
+                            
+                            st.subheader("Segment Level Budget Allocation", divider=True)
+                            st.dataframe(df3)
+                            csv2 = convert_df(df3)
+                            st.download_button(
+                                label="Download Segment Level Budget Allocation",
+                                data=csv2,
+                                file_name="segment_budget_allocation.csv",
+                                mime="text/csv"
+                            )
+                            
+                            # Gradient graph and HCP level budget calculations
+                            # (Same optimized code as in phases section)
+                            def truncate_colormap(cmap, min_val=0.0, max_val=1.0, n=100):
+                                new_cmap = colors.LinearSegmentedColormap.from_list(
+                                    'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=min_val, b=max_val),
+                                    cmap(np.linspace(min_val, max_val, n))
+                                )
+                                return new_cmap
+
+                            x = df3[client_segment]
+                            y2 = df3['Average Hcp Value Score']
+                            y = df3['Count of NPIs']
+                            
+                            fig, ax = plt.subplots(figsize=(15, 10))
+                            bars = ax.bar(x, y)
+                            y_min, y_max = ax.get_ylim()
+                            y_min2 = 0
+                            y_max2 = max(y2)
+                            grad = np.atleast_2d(np.linspace(0, 1, 256)).T
+                            
+                            for i, bar in enumerate(bars):
+                                bar.set_zorder(1)
+                                bar.set_facecolor("none")
+                                x_pos, _ = bar.get_xy()
+                                w, h = bar.get_width(), bar.get_height()
+                                h2 = y2.iloc[i]
+                                c_map = truncate_colormap(plt.cm.Blues, min_val=0,
+                                                        max_val=(h2 - y_min2) / (y_max2 - y_min2))
+                                ax.imshow(grad, extent=[x_pos, x_pos+w, h, y_min], aspect="auto", zorder=0, cmap=c_map)
+                            
+                            ax.spines.top.set_visible(False)
+                            ax.spines.right.set_visible(False)
+                            ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
+                            plt.xticks(size=12)
+                            plt.yticks(size=12)
+                            
+                            st.subheader("Gradient Graph", divider=True)
+                            st.pyplot(fig)
+
+                            # HCP Level Budget
+                            st.subheader("HCP Level Budget", divider=True)
+                            
+                            segment_budgets = {}
+                            key_count = 100
+                            for segment in df[client_segment].unique():
+                                budget = st.number_input(f"Enter the segment level budget for: {segment}", 
+                                                       min_value=0.0, key=key_count)
+                                segment_budgets[segment] = budget
+                                key_count += 1
+                            
+                            df['Score Distribution'] = 0.0
+                            df['Budget'] = 0.0
+                            
+                            for segment, budget in segment_budgets.items():
+                                if budget > 0:
+                                    mask = df[client_segment] == segment
+                                    total_score = df.loc[mask, 'norm_score'].sum()
+                                    if total_score > 0:
+                                        df.loc[mask, "Score Distribution"] = df.loc[mask, 'norm_score'] / total_score
+                                        df.loc[mask, "Budget"] = df.loc[mask, 'Score Distribution'] * budget
+                            
+                            st.dataframe(df.head(10))
+                            csv_final = convert_df(df)
+                            st.download_button(
+                                label="Download HCP Level Budget",
+                                data=csv_final,
+                                file_name="hcp_level_budget.csv",
+                                mime="text/csv"
+                            )
